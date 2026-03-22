@@ -4,63 +4,15 @@ import io
 import re
 import json
 import sqlite3
+import base64
+import textwrap
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 import sys
-
-# 尝试注册中文字体，兼容多系统
-CHINESE_FONT_NAME = "SimHei"
-FONT_REGISTERED = False
-
-def register_chinese_font():
-    global FONT_REGISTERED
-    if FONT_REGISTERED:
-        return
-    
-    font_paths = []
-    
-    # Windows字体路径
-    if sys.platform == "win32":
-        font_paths = [
-            'C:\\Windows\\Fonts\\simhei.ttf',
-            'C:\\Windows\\Fonts\\simsun.ttc',
-        ]
-    
-    # macOS字体路径
-    elif sys.platform == "darwin":
-        font_paths = [
-            '/System/Library/Fonts/PingFang.ttc',
-            '/Library/Fonts/Arial Unicode.ttf',
-            '/System/Library/Fonts/STHeiti Light.ttc',
-        ]
-    
-    # Linux字体路径
-    else:
-        font_paths = [
-            '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
-            '/usr/share/fonts/truetype/arphic/uming.ttc',
-            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        ]
-    
-    for font_path in font_paths:
-        try:
-            pdfmetrics.registerFont(TTFont(CHINESE_FONT_NAME, font_path))
-            FONT_REGISTERED = True
-            break
-        except Exception:
-            continue
-
-# 初始化时尝试注册字体
-register_chinese_font()
 
 DB_PATH = os.getenv("ESSAY_APP_DB", "essay_campus_system.db")
 APP_TITLE = "校园作文辅导系统（老师端 + 学生端 + 班级管理）"
@@ -84,17 +36,7 @@ try:
 except Exception:
     bcrypt = None
 
-try:
-    import cv2  # type: ignore
-    import numpy as np  # type: ignore
-except Exception:
-    cv2 = None
-    np = None
 
-try:
-    from rapidocr_onnxruntime import RapidOCR  # type: ignore
-except Exception:
-    RapidOCR = None
 
 
 # ----------------------------
@@ -357,6 +299,48 @@ def paragraph_count(text: str) -> int:
     return len(paras)
 
 
+def sentence_count(text: str) -> int:
+    """计算文本中的句子数"""
+    if not text:
+        return 0
+    import re
+    sentences = re.split(r'[。！？.!?]+', text)
+    sentences = [s for s in sentences if s.strip()]
+    return max(len(sentences), 1)
+
+
+def has_beginning_middle_end(text: str) -> bool:
+    """检查文章是否有开头、中间和结尾"""
+    para_count = paragraph_count(text)
+    sent_count = sentence_count(text)
+    return para_count >= 3 or sent_count >= 5
+
+
+def structure_level(text: str) -> str:
+    """评估文章结构水平"""
+    para_count = paragraph_count(text)
+    sent_count = sentence_count(text)
+    
+    if para_count >= 3 and sent_count >= 6:
+        return "较完整"
+    elif para_count >= 2 or sent_count >= 4:
+        return "基本完整"
+    else:
+        return "待加强"
+
+
+def expression_level(text: str) -> str:
+    """评估文章表达水平"""
+    # 简单的表达水平评估逻辑
+    word_count = chinese_word_count(text)
+    if word_count >= 200:
+        return "较丰富"
+    elif word_count >= 100:
+        return "一般"
+    else:
+        return "待丰富"
+
+
 def infer_structure_score(text: str) -> int:
     wc = chinese_word_count(text)
     pc = paragraph_count(text)
@@ -579,64 +563,69 @@ def query_df(sql: str, params: tuple = ()) -> pd.DataFrame:
     return df
 
 
-def create_pdf_report(title: str, student_name: str, feedback: Dict[str, Any]) -> bytes:
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    y = height - 20 * mm
+def text_to_data_url(img: Image.Image) -> str:
+    """将图片转换为base64编码的数据URL"""
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{encoded}"
+
+
+def fallback_image_prompts(grade: str) -> Dict[str, Any]:
+    """回退图像提示"""
+    return {
+        "scene": "这张图片里可能有人物、环境和正在发生的事情，适合做看图作文。",
+        "observe": [
+            "先说清楚图上有谁，他们在哪里。",
+            "仔细看人物的动作、表情和周围环境。",
+            "想一想：这件事发生前后可能有什么故事？",
+            "最后写出你的感受或明白的道理。"
+        ],
+        "questions": [
+            "谁是画面中的主角？",
+            "他们在做什么？",
+            "周围环境告诉了你什么信息？",
+            "如果给这幅图取一个题目，你会怎么取？"
+        ],
+        "suggested_title": "看图作文"
+    }
+
+
+def vision_observation_prompts(image: Image.Image, grade: str) -> Dict[str, Any]:
+    """使用大语言模型识别图像并生成观察提示"""
+    if not OPENAI_API_KEY:
+        return fallback_image_prompts(grade)
     
-    # 使用注册的中文字体，如果没有注册成功则使用默认字体
-    font_name = CHINESE_FONT_NAME if FONT_REGISTERED else "Helvetica"
-    c.setFont(font_name, 11)
-
-    def draw_line(text, size=11, gap=7):
-        nonlocal y
-        c.setFont(font_name, size)
-        c.drawString(18 * mm, y, text[:90])
-        y -= gap * mm
-
-    draw_line("作文评语单", 16, 10)
-    draw_line(f"题目：{title}")
-    draw_line(f"学生：{student_name}")
-    draw_line("")
-    draw_line("教师点评：", 12, 6)
-    for line in str(feedback.get("teacher_feedback", "")).split("\n"):
-        draw_line(line)
-    draw_line("")
-    draw_line("学生鼓励：", 12, 6)
-    for line in str(feedback.get("student_feedback", "")).split("\n"):
-        draw_line(line)
-    draw_line("")
-    draw_line("优点：", 12, 6)
-    for s in feedback.get("strengths", []):
-        draw_line(f"- {s}")
-    draw_line("")
-    draw_line("改进建议：", 12, 6)
-    for s in feedback.get("suggestions", []):
-        draw_line(f"- {s}")
-    c.save()
-    return buffer.getvalue()
-
-
-def preprocess_for_ocr(image: Image.Image) -> Image.Image:
-    if cv2 is None or np is None:
-        return image
-    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.fastNlMeansDenoising(gray, None, 15, 7, 21)
-    th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
-    return Image.fromarray(th)
-
-
-def run_ocr(image: Image.Image) -> str:
-    if RapidOCR is None:
-        return ""
-    engine = RapidOCR()
-    result, _ = engine(np.array(preprocess_for_ocr(image)))
-    if not result:
-        return ""
-    lines = [r[1] for r in result]
-    return "\n".join(lines)
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+        
+        prompt = textwrap.dedent(f"""
+        你是一位小学作文老师。请根据图片，为{grade}学生生成看图作文辅助信息。
+        输出 JSON，包含：
+        scene 写1句场景概括；
+        observe 给4条观察提示；
+        questions 给4条启发问题；
+        suggested_title 给1个推荐题目；
+        语言适合小学生。
+        """).strip()
+        
+        data_url = text_to_data_url(image)
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "你是小学作文辅导老师，只输出合法JSON。"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]}
+            ]
+        )
+        return json.loads(resp.choices[0].message.content)
+    except Exception:
+        return fallback_image_prompts(grade)
 
 
 # ----------------------------
@@ -840,21 +829,23 @@ def student_view(user: Dict[str, Any]):
         if image_file:
             image = Image.open(image_file).convert("RGB")
             st.image(image, caption="上传的图片", use_container_width=True)
-            auto_text = ""
-            if st.button("尝试 OCR 识别图片文字（适合含文字图片/手写稿）"):
-                auto_text = run_ocr(image)
-                if auto_text:
-                    st.text_area("OCR 结果", auto_text, height=150)
-                else:
-                    st.info("未识别到文字，或当前环境未安装 OCR 引擎。")
-            st.markdown("### 观察提示")
-            st.markdown("- 图中有哪些人、物、景？")
-            st.markdown("- 谁在做什么？表情、动作、位置有什么特点？")
-            st.markdown("- 事情可能发生在什么时候、什么地方？")
-            st.markdown("- 你能从画面联想到一个怎样的故事？")
-            st.markdown("### 推荐题目")
-            for t in generate_topics(grade, "看图作文", "图片观察"):
-                st.markdown(f"- {t}")
+            
+            if st.button("生成观察提示"):
+                obs = vision_observation_prompts(image, grade)
+                st.markdown("### 场景概括")
+                st.write(obs.get("scene", ""))
+                
+                st.markdown("### 观察提示")
+                for item in obs.get("observe", []):
+                    st.markdown(f"- {item}")
+                
+                st.markdown("### 启发问题")
+                for item in obs.get("questions", []):
+                    st.markdown(f"- {item}")
+                
+                if "suggested_title" in obs:
+                    st.markdown(f"### 推荐题目")
+                    st.success(obs["suggested_title"])
 
     elif menu == "历史版本对比":
         df = query_df(
@@ -938,9 +929,6 @@ def show_feedback(grade, title, essay, feedback, wc, structure, expression, tota
     else:
         st.write(str(step))
 
-    pdf_bytes = create_pdf_report(title, "学生", feedback)
-    st.download_button("导出 PDF 评语单", data=pdf_bytes, file_name=f"{title}_评语单.pdf", mime="application/pdf")
-
 
 def parent_view(user: Dict[str, Any]):
     st.header("家长/老师视图")
@@ -982,7 +970,7 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="📝", layout="wide")
     init_db()
     st.title(APP_TITLE)
-    st.caption("支持多角色登录、班级管理、作文布置、看图作文、OCR、分年级 rubric、历史版本对比、PDF 评语单与成长档案。")
+    st.caption("支持多角色登录、班级管理、作文布置、看图作文、大语言模型图像识别、分年级 rubric、历史版本对比与成长档案。")
 
     sidebar_auth()
     user = st.session_state.get("user")
@@ -1005,7 +993,7 @@ def main():
         st.markdown("- 学生端：写作、点评、改写、成长档案")
         st.markdown("- 老师端：布置题目、批量查看、班级管理")
         st.markdown("- 家长/老师视图：查看最近练习与趋势")
-        st.markdown("- OCR：支持拍照识别作文图片（环境安装 OCR 引擎时可用）")
+        st.markdown("- 看图作文：使用大语言模型生成观察提示和启发问题")
         return
 
     role = user["role"]

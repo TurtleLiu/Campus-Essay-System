@@ -33,7 +33,16 @@ class TestBasicFunctions(unittest.TestCase):
     def test_count_chinese_chars_with_special_chars(self):
         """测试包含特殊字符的中文字符计数"""
         text = "这是一篇作文！包含标点符号，数字123，字母abc。"
-        self.assertEqual(count_chinese_chars(text), 13)
+        self.assertEqual(count_chinese_chars(text), 16)
+    
+    def test_count_chinese_chars_edge_cases(self):
+        """测试中文字符计数的边界情况"""
+        # 全角字符测试
+        self.assertEqual(count_chinese_chars("ａｂｃ１２３"), 0)
+        # 中文标点测试
+        self.assertEqual(count_chinese_chars("，。！？：；""''"), 0)
+        # 混合文本测试
+        self.assertEqual(count_chinese_chars("Hello 世界123你好abc"), 4)
     
     def test_fallback_feedback_structure(self):
         """测试回退反馈的结构完整性"""
@@ -55,10 +64,17 @@ class TestBasicFunctions(unittest.TestCase):
     
     def test_fallback_feedback_normal_essay(self):
         """测试正常长度作文的回退反馈"""
-        normal_essay = "这是一篇正常长度的作文。今天天气很好，我和同学们一起去公园玩。我们玩了很多游戏，非常开心。"
+        normal_essay = "这是一篇正常长度的作文。今天天气很好，我和同学们一起去公园玩。我们玩了很多游戏，非常开心。公园里的花儿开得很美，有红色的玫瑰、黄色的菊花，还有紫色的薰衣草。我们在草地上奔跑、追逐，玩得不亦乐乎。不知不觉中，太阳慢慢西沉，我们恋恋不舍地离开了公园。今天真是难忘的一天，我和朋友们度过了美好的时光。"
         feedback = fallback_feedback(normal_essay)
         self.assertIn("完整主题", feedback["summary"])
         self.assertEqual(feedback["scores"]["细节描写"], 6)
+    
+    def test_fallback_feedback_empty_essay(self):
+        """测试空作文的回退反馈"""
+        empty_essay = ""
+        feedback = fallback_feedback(empty_essay)
+        self.assertIsInstance(feedback, dict)
+        self.assertIn("summary", feedback)
     
     def test_build_user_prompt_structure(self):
         """测试用户提示构建的结构"""
@@ -68,6 +84,15 @@ class TestBasicFunctions(unittest.TestCase):
         self.assertIn("主题：难忘的一天", prompt)
         self.assertIn("目标字数：300", prompt)
         self.assertIn("作文内容", prompt)
+    
+    def test_build_user_prompt_edge_cases(self):
+        """测试用户提示构建的边界情况"""
+        # 空作文测试
+        prompt = build_user_prompt("三年级", "记叙文", "难忘的一天", 300, "")
+        self.assertIn("学生年级：三年级", prompt)
+        # 最大字数测试
+        prompt = build_user_prompt("六年级", "想象作文", "假如我会飞", 800, "测试作文")
+        self.assertIn("目标字数：800", prompt)
     
     def test_make_revision_prompt(self):
         """测试修改提示构建"""
@@ -80,6 +105,13 @@ class TestBasicFunctions(unittest.TestCase):
         self.assertIn("测试作文", prompt)
         self.assertIn("优点1", prompt)
         self.assertIn("改进1", prompt)
+    
+    def test_make_revision_prompt_empty_feedback(self):
+        """测试空反馈的修改提示构建"""
+        feedback = {"strengths": [], "improvements": []}
+        essay = "测试作文"
+        prompt = make_revision_prompt(essay, feedback)
+        self.assertIn("测试作文", prompt)
     
     def test_revise_guidance_fallback(self):
         """测试修改指导的回退功能"""
@@ -101,6 +133,26 @@ class TestBasicFunctions(unittest.TestCase):
         self.assertTrue(len(GENRE_OPTIONS) > 0)
         self.assertTrue(len(THEME_OPTIONS) > 0)
         self.assertTrue(len(RUBRIC) > 0)
+    
+    def test_constants_content_validation(self):
+        """测试常量内容的有效性"""
+        # 验证年级选项包含预期值
+        self.assertIn("三年级", GRADE_OPTIONS)
+        self.assertIn("六年级", GRADE_OPTIONS)
+        
+        # 验证作文类型选项包含预期值
+        self.assertIn("记叙文", GENRE_OPTIONS)
+        self.assertIn("写人", GENRE_OPTIONS)
+        
+        # 验证评分维度包含所有必要字段
+        required_rubric_keys = ["立意与内容", "结构与条理", "语言表达", "细节描写", "书写规范"]
+        for key in required_rubric_keys:
+            self.assertIn(key, RUBRIC)
+        
+        # 验证JSON模式提示包含所有必要字段
+        required_schema_keys = ["summary", "scores", "strengths", "improvements", "sentence_polish", "outline_advice", "encouragement"]
+        for key in required_schema_keys:
+            self.assertIn(key, JSON_SCHEMA_HINT)
 
 
 if __name__ == '__main__':

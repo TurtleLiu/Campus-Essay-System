@@ -88,7 +88,7 @@ class TestLLMFunctions(unittest.TestCase):
     
     def test_call_llm_normal_essay(self):
         """测试正常长度作文的反馈"""
-        normal_essay = "这是一篇正常长度的作文。今天天气很好，我和同学们一起去公园玩。我们玩了很多游戏，非常开心。"
+        normal_essay = "这是一篇正常长度的作文。今天天气很好，我和同学们一起去公园玩。我们玩了很多游戏，非常开心。公园里的花儿开得很美，有红色的玫瑰、黄色的菊花，还有紫色的薰衣草。我们在草地上奔跑、追逐，玩得不亦乐乎。不知不觉中，太阳慢慢西沉，我们恋恋不舍地离开了公园。今天真是难忘的一天，我和朋友们度过了美好的时光。"
         feedback = call_llm("三年级", "记叙文", "测试主题", 300, normal_essay)
         
         self.assertIn("完整主题", feedback["summary"])
